@@ -1,4 +1,4 @@
-name: roses2021
+name: rosesANT2021
 channels:
   - conda-forge
   - defaults

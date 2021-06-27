@@ -155,6 +155,15 @@ def invert4model(alpha, beta, lambda_, correlation_length, lonstep, latstep,
     A function to wrap all the calculations when inverting for the tomographic
     model.
 
+    Parameters:
+    -----------
+    alpha: float
+           The smoothing parameter for the inversion.
+    beta: float
+          The strength of the weighted norm penalization term in the penalty
+          function
+    lambda_: float
+
     Returns:
     --------
     ????
@@ -277,16 +286,16 @@ def plot_interpolated(grid, v, fine_num_lats, fine_num_lons, path_density, inset
 
     fv = scipy.interpolate.interp2d(grid.yarray(), grid.xarray(), v, kind="cubic")
     v_interp = fv(lats, lons)
-    # --------------------------------------------------------------------------------------------------------------- #
+    # ----------------------------------------------------------------------- #
 
     # Mask areas with no raypaths
-    # --------------------------------------------------------------------------------------------------------------- #
+    # ----------------------------------------------------------------------- #
     for i in range(len(x)):
         for j in range(len(y)):
             dens = path_density[y[j], x[i]]
             if dens < 1.0:
                 v_interp[j, i] = v_interp[j, i] * np.nan
-    # --------------------------------------------------------------------------------------------------------------- #
+    # ----------------------------------------------------------------------- #
 
     grd = xr.DataArray(v_interp.T, coords=(lats, lons)) # Get the data in a format that pygmt can use
 
