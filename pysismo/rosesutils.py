@@ -205,7 +205,7 @@ def invert4model(alpha, beta, lambda_, correlation_length, lonstep, latstep,
     return v, twoD_path_density, R, grid, Cinv, Ginv
 
 
-def make_paths(disp_curves):
+def make_paths(disp_curves, v_type):
     # Here I am just appending to a list. This is not necessarily fast, but
     # I'm only appending a few values so it's ok here. Usually it's better to
     # predefine the array.
@@ -224,7 +224,7 @@ def make_paths(disp_curves):
         dists.append(dist)
     dists = np.array(dists)
     paths = np.array(paths, dtype="object")
-    vels = disp_curves["group_velocity"]
+    vels = disp_curves[v_type]
 
     return vels, paths, dists
 
@@ -263,7 +263,8 @@ def make_grid(disp_curves, tol, latstep, lonstep):
     return grid
 
 
-def plot_interpolated(grid, v, fine_num_lats, fine_num_lons, path_density, inset_region):
+def plot_interpolated(grid, v, fine_num_lats, fine_num_lons, path_density, inset_region,
+                      v_type):
 
     xmin, xmax, ymin, ymax = grid.bbox()
     # Interpolate the data onto a finer grid
@@ -326,5 +327,5 @@ def plot_interpolated(grid, v, fine_num_lats, fine_num_lons, path_density, inset
         )
         rectangle=[[xmin-1, ymin-1, xmax+1,ymax+1]]
         fig.plot(data=rectangle, style="r+s", pen="2p,blue")
-    fig.colorbar(frame='+l"Group Velocity [km/s]"')
+    fig.colorbar(frame=f'+l"{v_type} [km/s]"')
     fig.show()
