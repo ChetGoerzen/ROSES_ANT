@@ -17,8 +17,6 @@ from matplotlib import gridspec
 from matplotlib.colors import ColorConverter
 import shutil
 from inspect import getargspec
-from numba.experimental import jitclass
-from numba import int32, float32
 
 
 # todo: discard measurments if too different from trimester velocities (see BB15B-SPB)

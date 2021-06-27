@@ -6,49 +6,15 @@ Adapted from (https://github.com/bgoutorbe/seismic-noise-tomography)
 
 import numpy as np
 import itertools as it
-from numba import jit
+import scipy
+import pygmt
+import xarray as xr
 
 from . import psutils
 from .pstomo import Grid
 
+
 def make_G(paths, grid, v0):
-    """
-    Makes the matrix G for a given set of paths:
-    """
-
-    G = np.zeros((len(paths), grid.n_nodes()))
-    for ipath, path in enumerate(paths):
-        lon_M, lat_M = path[:, 0], path[:, 1]
-        xyzM = psutils.geo2cartesian(lon_M, lat_M)
-
-        iA, iB, iC = grid.indexes_delaunay_triangle(lon_M, lat_M)
-        lonlatA, lonlatB, lonlatC = [grid.xy(index_) for index_ in (iA, iB, iC)]
-        xyzA, xyzB, xyzC = [psutils.geo2cartesian(lon, lat)
-                            for lon, lat in (lonlatA, lonlatB, lonlatC)]
-
-        xyzMp = psutils.projection(xyzM, xyzA, xyzB, xyzC)
-        wA, wB, wC = psutils.barycentric_coords(xyzMp, xyzA, xyzB, xyzC)
-
-        # attributing weights to grid nodes along path:
-        # w[j, :] = w_j(r) = weights of node j along path
-        nM = path.shape[0]
-        w = np.zeros((grid.n_nodes(), nM))
-        w[iA, range(nM)] = wA
-        w[iB, range(nM)] = wB
-        w[iC, range(nM)] = wC
-
-        # ds = array of infinitesimal distances along path
-        ds = psutils.dist(lons1=lon_M[:-1], lats1=lat_M[:-1],
-                          lons2=lon_M[1:], lats2=lat_M[1:])
-
-        # integrating w_j(r) / v0 along path using trapeze formula
-        G[ipath, :] = np.sum(0.5 * (w[:, :-1] + w[:, 1:]) / v0 * ds, axis=-1)
-
-    G = np.matrix(G)
-
-    return G
-
-def make_G_slow(paths, grid, v0):
     """
     Makes the matrix G for a given set of paths:
     """
@@ -184,61 +150,16 @@ def path_density(grid, paths, window):
 
 
 def invert4model(alpha, beta, lambda_, correlation_length, lonstep, latstep,
-                 tol, disp_curves):
+                 grid, vels, dists, paths):
     """
     A function to wrap all the calculations when inverting for the tomographic
     model.
+
+    Returns:
+    --------
+    ????
     """
 
-    # Setup the inversion grid
-    # ----------------------------------------------------------------------- #
-
-    # Get the smallest longitude
-    min_rcv_lon = np.min(disp_curves["receiver_lon"])
-    min_src_lon = np.min(disp_curves["source_lon"])
-    min_lon = np.min([min_rcv_lon, min_src_lon]) - tol
-
-    # Get the smallest latitude
-    min_rcv_lat = np.min(disp_curves["receiver_lat"])
-    min_src_lat = np.min(disp_curves["source_lat"])
-    min_lat = np.min([min_rcv_lat, min_src_lat]) - tol
-
-    # Get the largest longitude
-    max_rcv_lon = np.max(disp_curves["receiver_lon"])
-    max_src_lon = np.max(disp_curves["source_lon"])
-    max_lon = np.max([max_rcv_lon, max_src_lon])
-
-    # Get the largest latitude
-    max_rcv_lat = np.max(disp_curves["receiver_lat"])
-    max_src_lat = np.max(disp_curves["source_lat"])
-    max_lat = np.max([max_rcv_lat, max_src_lat])
-
-    nlon = np.ceil((max_lon + tol - min_lon) / lonstep)
-    nlat = np.ceil((max_lat + tol - min_lat) / latstep)
-
-    # Create a grid object, from pysismo
-    grid = Grid(min_lon, lonstep, nlon, min_lat, latstep, nlat)
-    # ----------------------------------------------------------------------- #
-
-    # Here I am just appending to a list. This is not necessarily fast, but
-    # I'm only appending a few values so it's ok here. Usually it's better to
-    # predefine the array.
-    paths = []
-    dists = []
-
-    for idx, row in disp_curves.iterrows():
-        dist = psutils.dist(row.source_lon, row.source_lat,
-                            row.receiver_lon, row.receiver_lat)
-        npts = np.max([np.ceil(dist) + 1, 100])
-        source_coords = (row.source_lon, row.source_lat)
-        receiver_coords = (row.receiver_lon, row.receiver_lat)
-        path = psutils.geodesic(source_coords, receiver_coords, npts)
-
-        paths.append(path)
-        dists.append(dist)
-    dists = np.array(dists)
-    paths = np.array(paths, dtype="object")
-    vels = disp_curves["group_velocity"]
     s = (dists / vels).sum() / dists.sum()
     v0 = 1.0 / s
     G = make_G(paths, grid, v0)
@@ -248,7 +169,7 @@ def invert4model(alpha, beta, lambda_, correlation_length, lonstep, latstep,
     sigmad = sigmav * dists / vels**2
     Cinv = np.matrix(np.zeros((len(sigmav), len(sigmav))))
     np.fill_diagonal(Cinv, 1.0 / sigmad**2)
-    d = grid.to_2D_array(density)
+    twoD_path_density = grid.to_2D_array(density)
 
     dists_mat = np.zeros((grid.n_nodes(), grid.n_nodes()))
     i_upper, j_upper = np.triu_indices_from(dists_mat)
@@ -281,4 +202,129 @@ def invert4model(alpha, beta, lambda_, correlation_length, lonstep, latstep,
     R = Ginv * Cinv * G
     v = grid.to_2D_array(v0 / (1 + mopt))
 
-    return v, d, R, grid
+    return v, twoD_path_density, R, grid, Cinv, Ginv
+
+
+def make_paths(disp_curves):
+    # Here I am just appending to a list. This is not necessarily fast, but
+    # I'm only appending a few values so it's ok here. Usually it's better to
+    # predefine the array.
+    paths = []
+    dists = []
+
+    for idx, row in disp_curves.iterrows():
+        dist = psutils.dist(row.source_lon, row.source_lat,
+                            row.receiver_lon, row.receiver_lat)
+        npts = np.max([np.ceil(dist) + 1, 100])
+        source_coords = (row.source_lon, row.source_lat)
+        receiver_coords = (row.receiver_lon, row.receiver_lat)
+        path = psutils.geodesic(source_coords, receiver_coords, npts)
+
+        paths.append(path)
+        dists.append(dist)
+    dists = np.array(dists)
+    paths = np.array(paths, dtype="object")
+    vels = disp_curves["group_velocity"]
+
+    return vels, paths, dists
+
+
+def make_grid(disp_curves, tol, latstep, lonstep):
+    """
+    Set up the inversion grid.
+    """
+
+    # Get the smallest longitude
+    min_rcv_lon = np.min(disp_curves["receiver_lon"])
+    min_src_lon = np.min(disp_curves["source_lon"])
+    min_lon = np.min([min_rcv_lon, min_src_lon]) - tol
+
+    # Get the smallest latitude
+    min_rcv_lat = np.min(disp_curves["receiver_lat"])
+    min_src_lat = np.min(disp_curves["source_lat"])
+    min_lat = np.min([min_rcv_lat, min_src_lat]) - tol
+
+    # Get the largest longitude
+    max_rcv_lon = np.max(disp_curves["receiver_lon"])
+    max_src_lon = np.max(disp_curves["source_lon"])
+    max_lon = np.max([max_rcv_lon, max_src_lon])
+
+    # Get the largest latitude
+    max_rcv_lat = np.max(disp_curves["receiver_lat"])
+    max_src_lat = np.max(disp_curves["source_lat"])
+    max_lat = np.max([max_rcv_lat, max_src_lat])
+
+    nlon = np.ceil((max_lon + tol - min_lon) / lonstep)
+    nlat = np.ceil((max_lat + tol - min_lat) / latstep)
+
+    # Create a grid object, from pysismo
+    grid = Grid(min_lon, lonstep, nlon, min_lat, latstep, nlat)
+
+    return grid
+
+
+def plot_interpolated(grid, v, fine_num_lats, fine_num_lons, path_density, inset_region):
+
+    xmin, xmax, ymin, ymax = grid.bbox()
+    # Interpolate the data onto a finer grid
+    # --------------------------------------------------------------------------------------------------------------- #
+    lats = np.linspace(ymin, ymax, fine_num_lats)
+    lons = np.linspace(xmin, xmax, fine_num_lons)
+
+    x = np.digitize(lats, grid.yarray(), right=True)
+    y = np.digitize(lons, grid.xarray(), right=True)
+
+    fv = scipy.interpolate.interp2d(grid.yarray(), grid.xarray(), v, kind="cubic")
+    v_interp = fv(lats, lons)
+    # --------------------------------------------------------------------------------------------------------------- #
+
+    # Mask areas with no raypaths
+    # --------------------------------------------------------------------------------------------------------------- #
+    for i in range(len(x)):
+        for j in range(len(y)):
+            dens = path_density[y[j], x[i]]
+            if dens < 1.0:
+                v_interp[j, i] = v_interp[j, i] * np.nan
+    # --------------------------------------------------------------------------------------------------------------- #
+
+    grd = xr.DataArray(v_interp.T, coords=(lats, lons)) # Get the data in a format that pygmt can use
+
+    fig = pygmt.Figure()
+    fig.basemap(
+        region=f"{xmin-1}/{xmax+1}/{ymin-1}/{ymax+1}", # Plot a slightly expanded region around the study area
+        frame=True, # Plot a nice frame
+        projection="M15c" # Use Mercator projection with a plot width of 15cm
+    )
+    fig.coast(
+        land="lightgray", # Color the land light gray
+        water="white", # color the water white
+        borders=1, # Plot national boundaries
+        shorelines=True # Show shorelines
+    )
+
+    # Make a colormap
+    pygmt.makecpt(
+          cmap="inferno", reverse=True,
+          series=[np.nanmin(v_interp), np.nanmax(v_interp)]
+    )
+
+    # Show the tomography data
+    fig.grdimage(
+                 grd,
+                 frame=True,
+                 cmap=True,
+                 nan_transparent=True,
+                 transparency=20
+    )
+
+    # Make an inset plot, with the study area depicted
+    with fig.inset(position="jTL+w5c/4.8c", box="+gblack+p2p"):
+        fig.coast(
+            region=inset_region,
+            land="green",
+            water="cornflowerblue"
+        )
+        rectangle=[[xmin-1, ymin-1, xmax+1,ymax+1]]
+        fig.plot(data=rectangle, style="r+s", pen="2p,blue")
+    fig.colorbar(frame='+l"Group Velocity [km/s]"')
+    fig.show()
